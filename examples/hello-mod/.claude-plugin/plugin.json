@@ -1,0 +1,5 @@
+{
+  "name": "hello-mod",
+  "version": "0.1.0",
+  "description": "A minimal Claude Code mod: counts tool calls, blocks a dangerous command, toasts when a turn ends"
+}

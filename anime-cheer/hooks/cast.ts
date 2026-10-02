@@ -5,6 +5,7 @@
 // W white, K near black, A/a outfit, C outfit second color, R and Y accents,
 // G glasses, P sleeves and Q hands (redrawn by poses), L legs, F shoes.
 
+import { dutyLines } from './duty'
 import { TROUPE, TROUPE_BANTER } from './troupe'
 
 export type Moment =
@@ -611,8 +612,10 @@ export function allLines(girl: Girl): Line[] {
     ...(a === girl.id ? [first] : []),
     ...(b === girl.id ? [second] : []),
   ])
+  // The troupe's duty lines are recorded too; the stand-ins' are spoken live.
+  const duty = girl.vox === undefined ? [] : dutyLines(girl.id)
   const seen = new Set<string>()
-  return [...own, ...banter].filter(line => !seen.has(spoken(line)) && seen.add(spoken(line)) !== undefined)
+  return [...own, ...banter, ...duty].filter(line => !seen.has(spoken(line)) && seen.add(spoken(line)) !== undefined)
 }
 
 export function findGirl(word: string): Girl | undefined {

@@ -158,8 +158,9 @@ export function canDraw(girl: Girl | undefined): boolean {
   return girl.pack === undefined ? PACKS.size === 0 && girl.sprite !== undefined : PACKS.has(girl.pack)
 }
 
-// `reach` is half her width standing: how far apart girls keep.
-export type Box = { w: number; h: number; cx: number; reach: number }
+// `reach` is half her width standing: how far apart girls keep. `stride` is
+// half her width walking: how far past the edge she is out of sight.
+export type Box = { w: number; h: number; cx: number; reach: number; stride: number }
 
 const BOXES = new Map<string, Box>()
 
@@ -172,14 +173,16 @@ export function boxOf(girl: Girl): Box {
     return known
   }
   const pack = packOf(girl)
-  let box: Box = { w: SPRITE_W + 2, h: SPRITE_H + 4, cx: SPRITE_W / 2 + 1, reach: SPRITE_W / 2 + 1 }
+  const plain = SPRITE_W / 2 + 1
+  let box: Box = { w: SPRITE_W + 2, h: SPRITE_H + 4, cx: plain, reach: plain, stride: plain }
   if (pack !== undefined) {
+    const framesOf = (anim: string) => (pack.anims[anim] ?? []).map(i => pack.frames[i]!)
+    const halfOf = (frames: PackFrame[]) => Math.max(1, ...frames.map(frame => Math.max(frame.ax, frame.w - 1 - frame.ax)))
     const frames = Object.values(pack.anims).flatMap(list => list.map(i => pack.frames[i]!))
-    const half = Math.max(...frames.map(frame => Math.max(frame.ax, frame.w - 1 - frame.ax)))
+    const half = halfOf(frames)
     const tall = Math.max(...frames.map(frame => frame.ay)) + 4
-    const body = (pack.anims.idle ?? []).map(i => pack.frames[i]!)
-    const reach = Math.max(...body.map(frame => Math.max(frame.ax, frame.w - 1 - frame.ax)))
-    box = { w: half * 2 + 1, h: tall + (tall % 2), cx: half, reach }
+    const reach = halfOf(framesOf('idle'))
+    box = { w: half * 2 + 1, h: tall + (tall % 2), cx: half, reach, stride: Math.max(reach, halfOf(framesOf('walk'))) }
   }
   BOXES.set(girl.id, box)
   return box
@@ -368,12 +371,16 @@ const distance = (a: number, b: number) =>
 
 // The glyph, foreground and background that show four pixels best with two
 // colors; the background may be the terminal's own, the foreground may not.
+//
+// The terminal admits each new (foreground, background) pair of a Raster at
+// a price, so two colors are always written in one order (the lower one in
+// front, the glyph turned inside out to match): half as many pairs.
 function quadrant(sub: readonly number[]): [number, number, number] {
   const seen = [...new Set(sub)]
   if (seen.length === 1 && seen[0] === NONE) {
     return [0x20, DEFAULT, DEFAULT]
   }
-  let best: [number, number, number] = [0x20, DEFAULT, DEFAULT]
+  let best = { mask: 0, fg: DEFAULT, bg: NONE }
   let bestError = Infinity
   for (const fg of seen) {
     if (fg === NONE) {
@@ -402,11 +409,14 @@ function quadrant(sub: readonly number[]): [number, number, number] {
       })
       if (error < bestError) {
         bestError = error
-        best = [QUADRANTS[mask]!, fg, bg === NONE ? DEFAULT : bg]
+        best = { mask, fg, bg }
       }
     }
   }
-  return best
+  if (best.mask === 15 || best.bg === NONE) {
+    return [QUADRANTS[best.mask]!, best.fg, DEFAULT]
+  }
+  return best.fg < best.bg ? [QUADRANTS[best.mask]!, best.fg, best.bg] : [QUADRANTS[15 - best.mask]!, best.bg, best.fg]
 }
 
 function quadrantAt(c: Canvas, row: number, column: number): [number, number, number] {
@@ -438,24 +448,44 @@ export function encode(c: Canvas): string {
 // One empty cell: a space on the terminal's own colors.
 export const BLANK_CELL = base64(new Uint8Array(Uint32Array.of(0x20, DEFAULT, DEFAULT).buffer))
 
-export type Span = { row: number; left: number; width: number; cells: string } | { row: number; cells: undefined }
+// `row` is the first cell row drawn; `band` numbers the bands from the top.
+export type Span =
+  | { band: number; row: number; left: number; width: number; height: number; cells: string }
+  | { band: number; row: number; cells: undefined }
 
-// Each cell row of the canvas cut to what is drawn in it, so the text beneath
-// shows around the drawing; a row with nothing drawn has no cells.
-export function spans(c: Canvas): Span[] {
+// The canvas cut into bands of `size` cell rows, each trimmed to what is
+// drawn in it, so the text beneath shows around the drawing; a band with
+// nothing drawn has no cells. One row per band hides the least text; a few
+// rows per band are fewer Rasters, and so fewer color pairs to admit.
+export function spans(c: Canvas, size = 1): Span[] {
+  const columns = Math.floor(c.w / 2)
+  const rows = Math.floor(c.h / 2)
+  const isDrawn = (row: number, column: number) => {
+    const top = row * 2 * c.w + column * 2
+    const bottom = top + c.w
+    return c.px[top] !== NONE || c.px[top + 1] !== NONE || c.px[bottom] !== NONE || c.px[bottom + 1] !== NONE
+  }
   const out: Span[] = []
-  for (let row = 0; row < Math.floor(c.h / 2); row++) {
-    let first = -1
-    let last = -1
-    for (let column = 0; column < Math.floor(c.w / 2); column++) {
-      const top = row * 2 * c.w + column * 2
-      const bottom = top + c.w
-      if (c.px[top] !== NONE || c.px[top + 1] !== NONE || c.px[bottom] !== NONE || c.px[bottom + 1] !== NONE) {
-        first = first < 0 ? column : first
-        last = column
+  for (let band = 0; band * size < rows; band++) {
+    let left = columns
+    let right = -1
+    let top = rows
+    let bottom = -1
+    for (let row = band * size; row < Math.min(rows, (band + 1) * size); row++) {
+      for (let column = 0; column < columns; column++) {
+        if (isDrawn(row, column)) {
+          left = Math.min(left, column)
+          right = Math.max(right, column)
+          top = Math.min(top, row)
+          bottom = Math.max(bottom, row)
+        }
       }
     }
-    out.push(first < 0 ? { row, cells: undefined } : { row, left: first, width: last - first + 1, cells: encodeRect(c, first, row, last - first + 1, 1) })
+    out.push(
+      right < 0
+        ? { band, row: band * size, cells: undefined }
+        : { band, row: top, left, width: right - left + 1, height: bottom - top + 1, cells: encodeRect(c, left, top, right - left + 1, bottom - top + 1) },
+    )
   }
   return out
 }

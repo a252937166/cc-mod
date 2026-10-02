@@ -12,3 +12,6 @@ anime-cheer/voices/
 # Written by Claude Code when it loads the mod from this folder.
 anime-cheer/.claude-plugin/types/
 anime-cheer/tsconfig.json
+
+# Recordings and scratch output made on this machine.
+outputs/

@@ -47,7 +47,9 @@ export type BubbleLayout = { top: number; left: number; lines: string[] }
 
 // Above the speaker's head, kept inside the stage; `head` is in pixels.
 export function layout(bubble: StageBubble, columns: number): BubbleLayout {
-  const lines = wrap(`${bubble.name}：${bubble.text}`, Math.max(8, Math.min(24, columns - 4))).slice(0, 3)
+  const all = wrap(`${bubble.name}：${bubble.text}`, Math.max(8, Math.min(24, columns - 4)))
+  // Four lines at most: what does not fit ends in an ellipsis.
+  const lines = all.length <= 4 ? all : [...all.slice(0, 3), `${[...all[3]!].slice(0, -1).join('')}…`]
   const width = Math.max(...lines.map(textWidth)) + 2
   const height = lines.length + 2
   const top = Math.max(0, Math.floor(bubble.head / 2) - height + 1)

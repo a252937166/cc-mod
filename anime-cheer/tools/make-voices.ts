@@ -52,7 +52,13 @@ if (engine === 'edge' && tts === '') {
 
 type Job = { girl: Girl; line: Line; path: string; isVox: boolean }
 
-const jobs: Job[] = CAST.flatMap(girl =>
+// Without edge-tts only the girls with a VOICEVOX voice can be recorded.
+const voiceless = tts === '' ? CAST.filter(girl => !(engine === 'voicevox' && girl.vox !== undefined)) : []
+if (voiceless.length > 0) {
+  console.log(`edge-tts not found: skipping ${voiceless.map(girl => girl.name).join('、')} (pip install edge-tts to record them)`)
+}
+
+const jobs: Job[] = CAST.filter(girl => !voiceless.includes(girl)).flatMap(girl =>
   allLines(girl).map(line => {
     const isVox = engine === 'voicevox' && girl.vox !== undefined
     return { girl, line, path: join(root, clipPath(girl, line, isVox ? 'voicevox' : 'edge')), isVox }

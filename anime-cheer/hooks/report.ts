@@ -12,7 +12,12 @@ export type Day = Usage & {
   tools: number
   errors: number
   costUsd: number
+  // The most new tokens one turn took in (`freshOf`), cache hits aside.
   biggestTurn: number
+  measure: 'fresh'
+  // Commands the guard stopped and reviews run today.
+  blocked?: number
+  reviews?: number
 }
 
 export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
@@ -28,9 +33,14 @@ export const emptyDay = (date: string): Day => ({
   errors: 0,
   costUsd: 0,
   biggestTurn: 0,
+  measure: 'fresh',
 })
 
 export const totalOf = (usage: Usage) => usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+
+// What a turn took in anew: cache hits are re-read context, not new work, and
+// a long session re-reads its whole context on every request.
+export const freshOf = (usage: Usage) => usage.input + usage.cacheWrite + usage.output
 
 // 12345 → 1.2万; 123456789 → 1.2亿.
 export function zhCount(n: number): string {
@@ -192,12 +202,26 @@ export function usageReport(s: Snapshot): string {
   return lines.join('\n')
 }
 
-// The text `/waifu 日报` prints.
+// The text `/waifu today` prints.
 export function dayReport(name: string, day: Day): string {
   return [
     `📅 ${name}的今日日报（${day.date}）`,
     `对话 ${day.turns} 轮 · 干活 ${zhDuration(day.workMs)} · 工具 ${day.tools} 次（报错 ${day.errors} 次）`,
     `token：输入 ${zhCount(day.input + day.cacheRead + day.cacheWrite)}（缓存命中 ${zhCount(day.cacheRead)}）· 输出 ${zhCount(day.output)}`,
-    `花费：约 $${day.costUsd.toFixed(2)} · 最能吃的一轮：${zhCount(day.biggestTurn)} token`,
+    `花费：约 $${day.costUsd.toFixed(2)} · 最能吃的一轮：${zhCount(day.biggestTurn)} token（不含缓存命中）`,
+    `值班：安全检查拦下 ${day.blocked ?? 0} 条命令 · review ${day.reviews ?? 0} 次`,
   ].join('\n')
+}
+
+// What a girl reads out when a turn ends: the new tokens it took and how full
+// the context is.
+export function turnBrief(tokens: number, percent: number | undefined): Line {
+  return {
+    ja: `今回は${jaCount(tokens)}トークン` + (percent === undefined ? 'よ' : `、コンテキストは${percent}パーセントよ`),
+    zh: `这一轮 ${zhCount(tokens)} token` + (percent === undefined ? '' : `，上下文 ${percent}%`),
+  }
+}
+
+export function budgetLine(mark: number, usd: number, budget: number): Line {
+  return { ja: `予算の${mark}パーセントを使ったわ`, zh: `预算用了 ${mark}%（$${usd.toFixed(2)} / $${budget}）` }
 }

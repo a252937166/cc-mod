@@ -36,6 +36,8 @@ export type Actor = {
   talkUntil: number
   hasArrived: boolean
   actedAt: number
+  // Until then she paces: every arrival sends her off to another spot.
+  paceUntil: number
 }
 
 export type World = {
@@ -54,12 +56,38 @@ const STEP = 2.2
 const STEP_Y = 0.6
 const SLEEP_AFTER_MS = 10 * 60_000
 
+type Range = readonly [number, number]
+
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo)
 const tall = (id: string) => heightOf(GIRLS.get(id))
 const isPacked = (id: string) => packOf(GIRLS.get(id)) !== undefined
+const widthOf = ([from, to]: Range) => to - from
+// How far from her middle a girl keeps the stage edge and the others, and how
+// far past the edge she is out of sight.
+const reachOf = (id: string) => boxOf(GIRLS.get(id)!).reach + 2
+const strideOf = (id: string) => boxOf(GIRLS.get(id)!).stride + 2
 
 export function createWorld(w: number, h: number, now: number): World {
   return { w, h, actors: [], mode: 'idle', frame: 0, hasCup: false, restSince: now, isRoaming: false }
+}
+
+// The room left of everyone else and right of everyone else on the roaming
+// stage, for this girl. `byTarget` counts only where the others are heading:
+// for someone who walks in behind a girl still on her way.
+function room(world: World, id: string, byTarget = false): { left: Range; right: Range } {
+  const lo = reachOf(id)
+  const hi = Math.max(lo, world.w - lo)
+  let leftEnd = hi
+  let rightStart = lo
+  for (const other of onStage(world)) {
+    if (other.id === id) {
+      continue
+    }
+    const gap = lo + reachOf(other.id) + 2
+    leftEnd = Math.min(leftEnd, (byTarget ? other.tx : Math.min(other.x, other.tx)) - gap)
+    rightStart = Math.max(rightStart, (byTarget ? other.tx : Math.max(other.x, other.tx)) + gap)
+  }
+  return { left: [lo, leftEnd], right: [rightStart, hi] }
 }
 
 // Somewhere for a girl to go: on the roaming stage she keeps to her side of
@@ -71,23 +99,28 @@ function spot(world: World, height = SPRITE_H, id?: string): { x: number; y: num
   if (me === undefined || id === undefined) {
     return { x: rand(6, Math.max(7, world.w - 7)), y }
   }
-  const reach = boxOf(GIRLS.get(id)!).reach + 2
-  let lo = reach
-  let hi = world.w - reach
-  if (world.isRoaming) {
-    for (const other of onStage(world)) {
-      if (other.id === id) {
-        continue
-      }
-      const gap = reach + boxOf(GIRLS.get(other.id)!).reach + 4
-      if (me.x <= other.x) {
-        hi = Math.min(hi, Math.min(other.x, other.tx) - gap)
-      } else {
-        lo = Math.max(lo, Math.max(other.x, other.tx) + gap)
-      }
-    }
+  const lo = reachOf(id)
+  const hi = Math.max(lo, world.w - lo)
+  const others = onStage(world).filter(actor => actor.id !== id)
+  if (!world.isRoaming || others.length === 0) {
+    return { x: rand(lo, hi), y }
   }
-  return { x: hi > lo ? rand(lo, hi) : me.x, y }
+  const { left, right } = room(world, id)
+  // Two girls on one spot: the id says who is "left", so they part.
+  const isLeft = others.every(other => me.x < other.x || (me.x === other.x && me.id < other.id))
+  const mine = isLeft ? left : right
+  if (widthOf(mine) > 0) {
+    return { x: rand(mine[0], mine[1]), y }
+  }
+  // No room on her side: standing in someone's drawing, she crosses over if
+  // there is room there. On a stage too narrow for the gap, each keeps to
+  // her own edge, as far apart as it allows.
+  const isCrowded = others.some(other => Math.abs(other.x - me.x) < lo + reachOf(other.id))
+  const across = isLeft ? right : left
+  if (isCrowded && widthOf(across) > 0) {
+    return { x: rand(across[0], across[1]), y }
+  }
+  return { x: isLeft ? lo : hi, y }
 }
 
 function headTo(actor: Actor, x: number, y: number, act: Act) {
@@ -98,13 +131,19 @@ function headTo(actor: Actor, x: number, y: number, act: Act) {
 }
 
 export function resize(world: World, w: number, h: number) {
+  const was = world.w
   world.w = w
   world.h = h
   for (const actor of world.actors) {
-    actor.x = Math.min(Math.max(actor.x, 6), Math.max(6, w - 7))
+    const lo = reachOf(actor.id)
+    const hi = Math.max(lo, w - lo)
+    // A place on the stage keeps its share of the width; a place past the
+    // right edge (walking in or out) moves with the edge.
+    const placed = (x: number) => (x < 0 ? x : x > was ? x - was + w : Math.min(Math.max((x / was) * w, lo), hi))
+    actor.x = placed(actor.x)
+    actor.tx = placed(actor.tx)
     const top = Math.min(tall(actor.id) - 1, h - 1)
     actor.y = Math.min(Math.max(actor.y, top), h - 1)
-    actor.tx = Math.min(actor.tx, w + 8)
     actor.ty = Math.min(Math.max(actor.ty, top), h - 1)
   }
 }
@@ -119,18 +158,42 @@ export function enter(world: World, id: string, now: number, isAtOnce = false): 
     return undefined
   }
   world.actors = world.actors.filter(actor => actor.id !== id)
-  const to = spot(world, tall(id))
-  if (world.isRoaming) {
-    const others = onStage(world)
-    to.x = others.length === 0 ? to.x : others[0]!.x < world.w / 2 ? rand(world.w / 2 + 8, world.w - 10) : rand(10, world.w / 2 - 8)
+  const lo = reachOf(id)
+  const hi = Math.max(lo, world.w - lo)
+  const top = Math.min(tall(id) - 1, world.h - 1)
+  const y = rand(top, world.h - 1)
+  const others = onStage(world)
+  let fromLeft = Math.random() < 0.5
+  let x = rand(lo, hi)
+  if (isAtOnce) {
+    // The opening cast, often before the stage has its size: one each side.
+    x = others.length % 2 === 0 ? rand(world.w * 0.15, world.w * 0.4) : rand(world.w * 0.6, world.w * 0.85)
+  } else if (world.isRoaming && others.length > 0) {
+    // She walks in on the roomier side and stops short of the others.
+    let sides = room(world, id)
+    if (widthOf(sides.left) <= 0 && widthOf(sides.right) <= 0) {
+      sides = room(world, id, true)
+    }
+    if (widthOf(sides.left) > 0 || widthOf(sides.right) > 0) {
+      fromLeft = widthOf(sides.left) >= widthOf(sides.right)
+      const side = fromLeft ? sides.left : sides.right
+      x = rand(side[0], side[1])
+    } else {
+      // Too narrow for the gap: the edge farthest from where the others stand.
+      fromLeft = others.reduce((sum, other) => sum + other.tx, 0) / others.length > world.w / 2
+      x = fromLeft ? lo : hi
+    }
   }
-  const fromLeft = Math.random() < 0.5
+  // Out of sight at first, behind anyone already walking in on that side.
+  const stride = strideOf(id)
+  const queue = world.actors.filter(actor => (fromLeft ? actor.x < 0 : actor.x > world.w)).length
+  const start = fromLeft ? -stride * (1 + queue * 2) : world.w + stride * (1 + queue * 2)
   const actor: Actor = {
     id,
-    x: isAtOnce ? to.x : fromLeft ? -6 : world.w + 6,
-    y: to.y,
-    tx: to.x,
-    ty: to.y,
+    x: isAtOnce ? x : start,
+    y,
+    tx: x,
+    ty: y,
     act: isAtOnce ? 'stand' : 'enter',
     until: now + rand(1000, 4000),
     facing: fromLeft ? 1 : -1,
@@ -138,6 +201,7 @@ export function enter(world: World, id: string, now: number, isAtOnce = false): 
     talkUntil: 0,
     hasArrived: isAtOnce,
     actedAt: 0,
+    paceUntil: 0,
   }
   world.actors.push(actor)
   return actor
@@ -145,9 +209,16 @@ export function enter(world: World, id: string, now: number, isAtOnce = false): 
 
 export function leave(world: World, id: string) {
   const actor = world.actors.find(one => one.id === id && one.act !== 'leave')
-  if (actor !== undefined) {
-    headTo(actor, actor.x < world.w / 2 ? -10 : world.w + 10, actor.y, 'leave')
+  if (actor === undefined) {
+    return
   }
+  // Out by the nearer side, unless someone stands in the way there.
+  const others = onStage(world).filter(one => one.id !== id)
+  const isBlockedLeft = world.isRoaming && others.some(other => other.x < actor.x)
+  const isBlockedRight = world.isRoaming && others.some(other => other.x >= actor.x)
+  const isNearLeft = actor.x < world.w / 2
+  const toLeft = isBlockedLeft === isBlockedRight ? isNearLeft : isBlockedRight
+  headTo(actor, toLeft ? -strideOf(id) : world.w + strideOf(id), actor.y, 'leave')
 }
 
 // Who brings the tea and who rubs your shoulders, by preference.
@@ -155,7 +226,8 @@ const SERVERS = ['saki', 'kaa', 'neko', 'chizuru']
 
 export function setMode(world: World, mode: Mode, now: number): { server?: Actor; masseuse?: Actor } {
   world.mode = mode
-  const cast = onStage(world)
+  // A girl still walking in keeps walking: she takes up the mode on arrival.
+  const cast = onStage(world).filter(actor => actor.act !== 'enter')
   if (mode !== 'idle') {
     world.restSince = now
   }
@@ -226,6 +298,10 @@ function walk(actor: Actor): boolean {
 }
 
 function plan(world: World, actor: Actor, now: number) {
+  if (now < actor.paceUntil) {
+    headTo(actor, spot(world, tall(actor.id), actor.id).x, actor.y, 'walk')
+    return
+  }
   if (world.mode === 'work') {
     if (Math.random() < 0.3) {
       actor.act = 'dance'
@@ -271,7 +347,7 @@ export function tick(world: World, now: number) {
           actor.until = now + 1500
         } else if (actor.act === 'enter' || actor.act === 'walk') {
           actor.act = 'stand'
-          actor.until = now + rand(1000, 3000)
+          actor.until = now < actor.paceUntil ? now : now + rand(1000, 3000)
         }
       }
       continue
@@ -301,6 +377,22 @@ export function perform(world: World, id: string, act: Act, now: number, ms: num
     actor.hasArrived = true
     actor.actedAt = world.frame
     actor.until = now + ms
+  }
+}
+
+// A girl walks up and down (thinking something over) for a while.
+export function pace(world: World, id: string, now: number, ms: number) {
+  const actor = onStage(world).find(one => one.id === id)
+  if (actor !== undefined && actor.act !== 'enter') {
+    actor.paceUntil = now + ms
+    headTo(actor, spot(world, tall(id), id).x, actor.y, 'walk')
+  }
+}
+
+export function settle(world: World, id: string) {
+  const actor = world.actors.find(one => one.id === id)
+  if (actor !== undefined) {
+    actor.paceUntil = 0
   }
 }
 
