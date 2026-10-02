@@ -1,0 +1,6 @@
+{
+  "name": "anime-cheer",
+  "version": "0.3.0",
+  "description": "Pixel anime girls roam your Claude Code transcript: they dance while Claude works, serve tea when it's done, speak Japanese with Chinese subtitles, and read out your token usage (/waifu)",
+  "types": "./types/index.d.ts"
+}

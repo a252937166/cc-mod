@@ -1,0 +1,14 @@
+.DS_Store
+node_modules/
+
+# Built on your machine from sheets you downloaded: game sprites belong to
+# their publishers, so they never go into git.
+anime-cheer/packs/*
+!anime-cheer/packs/.gitkeep
+
+# Voice clips are generated locally (tools/make-voices.ts).
+anime-cheer/voices/
+
+# Written by Claude Code when it loads the mod from this folder.
+anime-cheer/.claude-plugin/types/
+anime-cheer/tsconfig.json
